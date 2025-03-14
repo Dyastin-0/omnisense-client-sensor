@@ -22,11 +22,12 @@ struct Pin {
 	uint8_t pin;
 	String type;
 	bool previousState;
+	unsigned long lastDebounceTime = 0;
 };
 
 struct Sensor {
 	String name;
-	Pin pins[3];
+	Pin pin;
 };
 
 struct Device {
@@ -125,7 +126,7 @@ void handleConfigureWifi() {
   Serial.println("[Omnisense Sensor] [NTP] [Time] Synchronized.");
 
 	isConfigured = true;
-	if (MDNS.begin("omnisense")) Serial.println("[Omnisense Sensor] [MDNS] started.");
+	if (MDNS.begin("omnisense-sensor")) Serial.println("[Omnisense Sensor] [MDNS] started.");
 	MDNS.addService("http", "tcp", 80);
 
 	server.send(200, "Success");
@@ -167,52 +168,60 @@ void asyncCB1(AsyncResult &aResult) {
 
 
 void toggleRelay(const char* serializedDoc, String dataPath) {
-	DynamicJsonDocument deserializeDoc(1024);
-	deserializeJson(deserializeDoc, serializedDoc);
+  DynamicJsonDocument deserializedDoc(1024);
+  deserializeJson(deserializedDoc, serializedDoc);
 
-	if (deserializeDoc.is<JsonArray>()) {
-    JsonArray array = deserializeDoc.as<JsonArray>();
-    for (size_t i = 0; i < array.size(); i++) {
-      JsonObject object = array[i];
+	if (dataPath == "/") {
+  JsonObject rootObject = deserializedDoc.as<JsonObject>();
+  
+  for (JsonPair kvPair : rootObject) {
+    const char* key = kvPair.key().c_str();
+    JsonObject object = kvPair.value().as<JsonObject>(); 
 
-			JsonObject sensorObj = object["sensor"].as<JsonObject>();
-			Sensor sensor;
+    Serial.print("Processing device with ID: ");
+    Serial.println(key);
+
+    if (object.containsKey("sensor")) {
+      JsonObject sensorObj = object["sensor"].as<JsonObject>();
+      Sensor sensor;
 
       if (sensorObj.containsKey("name")) {
-				sensor.name = sensorObj["name"].as<String>();
-				
-				JsonArray pinsArray = sensorObj["pins"].as<JsonArray>();
-				for (size_t j = 0; j < pinsArray.size(); j++) {
-					JsonObject pinObj = pinsArray[j];
-					uint8_t pin = pinObj["pin"].as<int>();
-					String type = pinObj["type"].as<String>();
+        sensor.name = sensorObj["name"].as<String>();
 
-					sensor.pins[j].pin = pin;
-					sensor.pins[j].type = type;
+				uint8_t pin = sensorObj["pin"].as<int>();
+				sensor.pin.pin = pin;
+				sensor.pin.previousState = object["state"].as<bool>();
 
-					if (type == "DO") {
-						pinMode(pin, INPUT);
-						sensor.pins[j].previousState = false;
-					}
-      	}
-			} else {
-				sensor.name = "";
-			}
+				pinMode(pin, INPUT);
+
+				Serial.println(pin);
+				Serial.print("sensor pin: ");
+      } else {
+        sensor.name = "";
+      }
 
       Device device;
       device.name = object["name"].as<String>();
       device.sensor = sensor;
 
-      String path = "/" + String(i);
+      String path = "/" + String(key);
+      devicesMap[path] = device;
+    } else {
+      Device device;
+      device.name = object["name"].as<String>();
+      
+      String path = "/" + String(key);
       devicesMap[path] = device;
     }
-		pinsReady = true;
+  }
+  
+  pinsReady = true;
   } else {
-		if (deserializeDoc.containsKey("name")) {
-			String name = deserializeDoc["name"];
-			devicesMap[dataPath].name = name;
+    if (deserializedDoc.containsKey("state")) {
+			state = deserializedDoc["state"];
+			devicesMap[dataPath].sensor.pin.previousState = state;
 		}
-	}
+  } 
 }
 
 void setInstances(const char* serializedDoc) {
@@ -444,21 +453,36 @@ void sendStateChange(String path, String name, bool currentState) {
 	Database.update(aClient2, targetPath, state);
 }
 
+
+
 void sensorListeners() {
+  static const unsigned long debounceDelay = 500;
+  
   for (auto &entry : devicesMap) {
     Device &device = entry.second;
 
-    if (device.sensor.name != "") {
-      for (size_t j = 0; j < sizeof(device.sensor.pins) / sizeof(device.sensor.pins[0]); j++) {
-        Pin &pin = device.sensor.pins[j];
-        bool currentState = digitalRead(pin.pin);
-
-        if (currentState != pin.previousState) {
-          pin.previousState = currentState;
-          sendStateChange(entry.first, device.name, currentState);
+    if (device.sensor.name == "") {
+      continue;
+    }
+    
+    if (device.sensor.name == "Sound sensor (KY-038)") {
+      Pin &pin = device.sensor.pin;
+      
+      int triggered = digitalRead(pin.pin);
+      unsigned long currentTime = millis();
+      
+      if (triggered) {
+        if ((currentTime - pin.lastDebounceTime) > debounceDelay) {
+          Serial.print("Sound sensor state change on pin ");
+          Serial.print(pin.pin);
+          Serial.print(": ");
+          Serial.println(!pin.previousState ? "HIGH" : "LOW");
+          
+          sendStateChange(entry.first, device.name, !pin.previousState);
+          pin.lastDebounceTime = currentTime;
         }
       }
-    }
+    } 
   }
 }
 
