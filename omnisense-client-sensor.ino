@@ -16,7 +16,6 @@
 const String apiKey = "AIzaSyDI30Fd3AtxjZfCPC0QnaaQ68lUWe1_eK0";
 
 const char* ntpServer = "pool.ntp.org";
-unsigned long epochTime; 
 
 struct Pin {
 	uint8_t pin;
@@ -30,9 +29,18 @@ struct Sensor {
 	Pin pin;
 };
 
+struct Schedule {
+  String days[7];
+  String from;
+  String to;
+};
+
 struct Device {
 	String name;
+	bool sensorMode;
+	bool scheduleMode;
 	Sensor sensor;
+  Schedule schedule;
 };
 
 std::map<String, Device> devicesMap;
@@ -41,42 +49,27 @@ void asyncCB(AsyncResult &aResult);
 void asyncCB1(AsyncResult &aResult);
 
 DefaultNetwork network;
-
-FirebaseApp app;
-
 WiFiClientSecure ssl_client, ssl_client1, ssl_client2, ssl_client3;
 
 using AsyncClient = AsyncClientClass;
-
 AsyncClient aClient(ssl_client1, getNetwork(network)), aClient1(ssl_client3, getNetwork(network)), aClient2(ssl_client2, getNetwork(network));
 
+FirebaseApp app;
 RealtimeDatabase Database;
-
-bool state;
-bool taskListenerReady = false;
 
 WebServer server(80);
 WebSocketsServer webSocket = WebSocketsServer(81);
+
+bool taskListenerReady = false;
 
 bool isAuthenticated = false;
 bool isConfigured = false;
 
 String instancePath = "Default";
-
 std::vector<String> instances;
 
 uint8_t sensorPins[30]; 
 bool pinsReady = false;
-
-unsigned long getTime() {
-  time_t now;
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    return(0);
-  }
-  time(&now);
-  return now;
-}
 
 void handleAuth() {
 	if (isConfigured) {
@@ -114,7 +107,7 @@ void handleConfigureWifi() {
 	Serial.print("[Omnisense Sensor] [Wi-Fi] [IP] ");
 	Serial.println(WiFi.localIP());
 
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");
 
   Serial.println("[Omnisense Sensor] [NTP] [Time] Synchronizing...");
   struct tm timeInfo;
@@ -166,60 +159,162 @@ void asyncCB1(AsyncResult &aResult) {
 	Firebase.printf("[Omnisense Sensor] [Heap]: %d\n", ESP.getFreeHeap());
 }
 
-
 void toggleRelay(const char* serializedDoc, String dataPath) {
   DynamicJsonDocument deserializedDoc(1024);
   deserializeJson(deserializedDoc, serializedDoc);
 
+	if (serializedDoc == "null") {
+		devicesMap.erase(dataPath);
+		return;
+	}
+
+	if (dataPath != "/" && !devicesMap.count(dataPath) > 0) {
+		JsonObject object = deserializedDoc.as<JsonObject>(); 
+		Device device;
+
+		device.name = object["name"].as<String>();
+		device.sensorMode = object["sensorMode"].as<bool>();
+		device.scheduleMode = object["scheduleMode"].as<bool>();
+
+		Schedule schedule;
+		if (object.containsKey("schedule")) {
+			JsonObject scheduleObj = object["schedule"].as<JsonObject>();
+
+			JsonArray daysArray = scheduleObj["days"].as<JsonArray>();
+			int dayCount = min((size_t)7, daysArray.size());
+			
+			for (int i = 0; i < dayCount; i++) {
+				schedule.days[i] = daysArray[i].as<String>();
+			}
+
+			schedule.from = scheduleObj["from"].as<String>();
+			schedule.to = scheduleObj["to"].as<String>();
+		} else {
+			schedule.from = "";
+			schedule.to = "";
+		}
+		device.schedule = schedule;
+
+		Sensor sensor;
+		if (object.containsKey("sensor")) {
+			JsonObject sensorObj = object["sensor"].as<JsonObject>();
+			Sensor sensor;
+
+			sensor.name = sensorObj["name"].as<String>();
+
+			uint8_t pin = sensorObj["pin"].as<int>();
+			sensor.pin.pin = pin;
+			sensor.pin.previousState = object["state"].as<bool>();
+
+			pinMode(pin, INPUT);
+		} else {
+			Device device;
+			device.name = object["name"].as<String>();
+		}
+		device.sensor = sensor;
+
+		String path = "/" + String(dataPath);
+		devicesMap[path] = device;
+
+		return;
+	}
+
 	if (dataPath == "/") {
-  JsonObject rootObject = deserializedDoc.as<JsonObject>();
-  
-  for (JsonPair kvPair : rootObject) {
-    const char* key = kvPair.key().c_str();
-    JsonObject object = kvPair.value().as<JsonObject>(); 
+		JsonObject rootObject = deserializedDoc.as<JsonObject>();
+		
+		for (JsonPair kvPair : rootObject) {
+			const char* key = kvPair.key().c_str();
+			JsonObject object = kvPair.value().as<JsonObject>(); 
 
-    Serial.print("Processing device with ID: ");
-    Serial.println(key);
+			Serial.print("Processing device with ID: ");
+			Serial.println(key);
 
-    if (object.containsKey("sensor")) {
-      JsonObject sensorObj = object["sensor"].as<JsonObject>();
-      Sensor sensor;
+			Device device;
+			device.name = object["name"].as<String>();
+			device.sensorMode = object["sensorMode"].as<bool>();
+			device.scheduleMode = object["scheduleMode"].as<bool>();
 
-      if (sensorObj.containsKey("name")) {
-        sensor.name = sensorObj["name"].as<String>();
+			Schedule schedule;
+			if (object.containsKey("schedule")) {
+				JsonObject scheduleObj = object["schedule"].as<JsonObject>();
+
+				JsonArray daysArray = scheduleObj["days"].as<JsonArray>();
+				int dayCount = min((size_t)7, daysArray.size());
+				
+				for (int i = 0; i < dayCount; i++) {
+					schedule.days[i] = daysArray[i].as<String>();
+				}
+
+				schedule.from = scheduleObj["from"].as<String>();
+				schedule.to = scheduleObj["to"].as<String>();
+			} else {
+				schedule.from = "";
+				schedule.to = "";
+			}
+			device.schedule = schedule;
+
+			Sensor sensor;
+			if (object.containsKey("sensor")) {
+				JsonObject sensorObj = object["sensor"].as<JsonObject>();
+
+				sensor.name = sensorObj["name"].as<String>();
 
 				uint8_t pin = sensorObj["pin"].as<int>();
 				sensor.pin.pin = pin;
 				sensor.pin.previousState = object["state"].as<bool>();
 
 				pinMode(pin, INPUT);
+			} else {
+				sensor.name = "";
+			}
+			device.sensor = sensor;
 
-				Serial.println(pin);
-				Serial.print("sensor pin: ");
-      } else {
-        sensor.name = "";
-      }
-
-      Device device;
-      device.name = object["name"].as<String>();
-      device.sensor = sensor;
-
-      String path = "/" + String(key);
-      devicesMap[path] = device;
-    } else {
-      Device device;
-      device.name = object["name"].as<String>();
-      
-      String path = "/" + String(key);
-      devicesMap[path] = device;
-    }
-  }
-  
-  pinsReady = true;
+			String path = "/" + String(key);
+			devicesMap[path] = device;
+		}
+		pinsReady = true;
   } else {
+		if (deserializedDoc.containsKey("schedule")) {
+			JsonObject scheduleObj = deserializedDoc["schedule"].as<JsonObject>();
+
+			JsonArray daysArray = scheduleObj["days"].as<JsonArray>();
+			int dayCount = min((size_t)7, daysArray.size());
+			
+			for (int i = 0; i < dayCount; i++) {
+				devicesMap[dataPath].schedule.days[i] = daysArray[i].as<String>();
+			}
+
+			devicesMap[dataPath].schedule.from = scheduleObj["from"].as<String>();
+			devicesMap[dataPath].schedule.to = scheduleObj["to"].as<String>();
+		}
+
     if (deserializedDoc.containsKey("state")) {
-			state = deserializedDoc["state"];
-			devicesMap[dataPath].sensor.pin.previousState = state;
+			devicesMap[dataPath].sensor.pin.previousState = deserializedDoc["state"];
+		}
+
+		if (deserializedDoc.containsKey("sensor")) {
+			JsonObject sensorObj = deserializedDoc["sensor"].as<JsonObject>();
+
+			if (sensorObj.containsKey("name")) {
+				devicesMap[dataPath].sensor.name = sensorObj["name"].as<String>();
+			}
+
+			if (sensorObj.containsKey("pin")) {
+				uint8_t pin = sensorObj["pin"].as<int>();
+				devicesMap[dataPath].sensor.pin.pin = pin;
+			}
+		}
+		
+		if (deserializedDoc.containsKey("name")) {
+			devicesMap[dataPath].name = deserializedDoc["name"].as<String>();
+		}
+
+		if (deserializedDoc.containsKey("sensorMode")) {
+			devicesMap[dataPath].sensorMode = deserializedDoc["sensorMode"];
+		}
+
+		if (deserializedDoc.containsKey("scheduleMode")) {
+			devicesMap[dataPath].scheduleMode = deserializedDoc["scheduleMode"];
 		}
   } 
 }
@@ -453,6 +548,74 @@ void sendStateChange(String path, String name, bool currentState) {
 	Database.update(aClient2, targetPath, state);
 }
 
+bool isWithinSchedule(const Schedule& schedule) {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return false;
+  }
+  
+  int currentDayOfWeek = timeinfo.tm_wday;
+
+  bool isDayScheduled = false;
+  for (int i = 0; i < 7; i++) {
+    if (schedule.days[i].length() == 0) continue;
+    
+    String day = schedule.days[i];
+    
+    if ((day == "Sunday" && currentDayOfWeek == 0) ||
+        (day == "Monday" && currentDayOfWeek == 1) ||
+        (day == "Tuesday" && currentDayOfWeek == 2) ||
+        (day == "Wednesday" && currentDayOfWeek == 3) ||
+        (day == "Thursday" && currentDayOfWeek == 4) ||
+        (day == "Friday" && currentDayOfWeek == 5) ||
+        (day == "Saturday" && currentDayOfWeek == 6)) {
+      isDayScheduled = true;
+      break;
+    }
+  }
+  
+  if (!isDayScheduled) return false;
+  
+  int fromHour, fromMinute, toHour, toMinute;
+  bool fromIsPM, toIsPM;
+  
+  char fromAmPm[3] = {0};
+  int fromResult = sscanf(schedule.from.c_str(), "%d:%d %2s", &fromHour, &fromMinute, fromAmPm);
+  fromIsPM = (strcmp(fromAmPm, "PM") == 0);
+  
+  char toAmPm[3] = {0};
+  int toResult = sscanf(schedule.to.c_str(), "%d:%d %2s", &toHour, &toMinute, toAmPm);
+  toIsPM = (strcmp(toAmPm, "PM") == 0);
+  
+  // Check for parsing errors
+  if (fromResult != 3 || toResult != 3) {
+    Serial.println("[Schedule] Time parsing failed, returning false");
+    return false;
+  }
+
+  // Convert to 24-hour format
+  int originalFromHour = fromHour;
+  int originalToHour = toHour;
+  
+  if (fromHour == 12) fromHour = fromIsPM ? 12 : 0;
+  else if (fromIsPM) fromHour += 12;
+  
+  if (toHour == 12) toHour = toIsPM ? 12 : 0;
+  else if (toIsPM) toHour += 12;
+
+  int currentMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+  int fromMinutes = fromHour * 60 + fromMinute;
+  int toMinutes = toHour * 60 + toMinute;
+  
+  bool isWithinTime;
+  if (fromMinutes <= toMinutes) {
+    isWithinTime = (currentMinutes >= fromMinutes && currentMinutes < toMinutes);
+  } else {
+    isWithinTime = (currentMinutes >= fromMinutes || currentMinutes < toMinutes);
+  }
+  
+  return isWithinTime;
+}
 
 
 void sensorListeners() {
@@ -460,12 +623,10 @@ void sensorListeners() {
   
   for (auto &entry : devicesMap) {
     Device &device = entry.second;
-
-    if (device.sensor.name == "") {
-      continue;
-    }
+		Pin &pin = device.sensor.pin;
+		Schedule &schedule = device.schedule;
     
-    if (device.sensor.name == "Sound sensor (KY-038)") {
+    if (device.sensor.name == "Sound sensor (KY-038)" && device.sensorMode) {
       Pin &pin = device.sensor.pin;
       
       int triggered = digitalRead(pin.pin);
@@ -473,16 +634,24 @@ void sensorListeners() {
       
       if (triggered) {
         if ((currentTime - pin.lastDebounceTime) > debounceDelay) {
-          Serial.print("Sound sensor state change on pin ");
-          Serial.print(pin.pin);
-          Serial.print(": ");
-          Serial.println(!pin.previousState ? "HIGH" : "LOW");
-          
           sendStateChange(entry.first, device.name, !pin.previousState);
           pin.lastDebounceTime = currentTime;
         }
       }
-    } 
+    }
+
+		if (schedule.from != "" && device.scheduleMode) {
+			bool shouldBeOn = isWithinSchedule(schedule);
+			if (shouldBeOn) {
+				if (pin.previousState) continue;
+				sendStateChange(entry.first, device.name, !pin.previousState);
+
+				continue;
+			} else {
+				if (!pin.previousState) continue;
+				sendStateChange(entry.first, device.name, !pin.previousState);
+			}
+		}
   }
 }
 
