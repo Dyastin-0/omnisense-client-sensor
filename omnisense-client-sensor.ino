@@ -15,8 +15,6 @@
 #define databaseUrl "omnisense-17447-default-rtdb.asia-southeast1.firebasedatabase.app"
 const String apiKey = "AIzaSyDI30Fd3AtxjZfCPC0QnaaQ68lUWe1_eK0";
 
-const char* ntpServer = "pool.ntp.org";
-
 struct Pin {
 	uint8_t pin;
 	String type;
@@ -25,18 +23,19 @@ struct Pin {
 };
 
 struct Sensor {
-	String name;
+	String name = "";
 	Pin pin;
 };
 
 struct Schedule {
   String days[7];
-  String from;
-  String to;
+  String from = "";
+  String to = "";
 };
 
 struct Device {
 	String name;
+	bool enabled;
 	bool sensorMode;
 	bool scheduleMode;
 	Sensor sensor;
@@ -129,13 +128,12 @@ void asyncCB(AsyncResult &aResult) {
 	if (aResult.available()) {
 		RealtimeDatabaseResult &RTDB = aResult.to<RealtimeDatabaseResult>();
 		if (RTDB.isStream()) {
-			Serial.printf("[Omnisense Sensor] [%s] ----------------------------\n", aResult.uid().c_str());
 			Firebase.printf("[Omnisense Sensor] [%s] [task] %s\n", aResult.uid().c_str(), aResult.uid().c_str());
 			Firebase.printf("[Omnisense Sensor] [%s] [event] %s\n",aResult.uid().c_str(), RTDB.event().c_str());
 			Firebase.printf("[Omnisense Sensor] [%s] [path] %s\n", aResult.uid().c_str(), RTDB.dataPath().c_str());
 			Firebase.printf("[Omnisense Sensor] [%s] [data] %s\n", aResult.uid().c_str(), RTDB.to<const char *>());
-			if (RTDB.event().c_str() != "keep-alive") {
-				toggleRelay(RTDB.to<const char *>(), String(RTDB.dataPath().c_str()));
+			if (RTDB.event().c_str() != "keep-alive" && String(RTDB.dataPath().c_str()) != "") {
+				handleDeviceChanges(RTDB.to<const char *>(), String(RTDB.dataPath().c_str()));
 			}
 		}
 	}
@@ -146,12 +144,11 @@ void asyncCB1(AsyncResult &aResult) {
 	if (aResult.available()) {
 		RealtimeDatabaseResult &RTDB = aResult.to<RealtimeDatabaseResult>();
 		if (RTDB.isStream()) {
-			Serial.printf("[Omnisense Sensor] [%s] ----------------------------\n", aResult.uid().c_str());
 			Firebase.printf("[Omnisense Sensor] [%s] [task] %s\n", aResult.uid().c_str(), aResult.uid().c_str());
 			Firebase.printf("[Omnisense Sensor] [%s] [event] %s\n",aResult.uid().c_str(), RTDB.event().c_str());
 			Firebase.printf("[Omnisense Sensor] [%s] [path] %s\n", aResult.uid().c_str(), RTDB.dataPath().c_str());
 			Firebase.printf("[Omnisense Sensor] [%s] [data] %s\n", aResult.uid().c_str(), RTDB.to<const char *>());
-			if (RTDB.event().c_str() != "keep-alive") {
+			if (RTDB.event().c_str() != "keep-alive" && String(RTDB.dataPath().c_str()) != "") {
 				setInstances(RTDB.to<const char *>());
 			}
 		}
@@ -159,12 +156,15 @@ void asyncCB1(AsyncResult &aResult) {
 	Firebase.printf("[Omnisense Sensor] [Heap]: %d\n", ESP.getFreeHeap());
 }
 
-void toggleRelay(const char* serializedDoc, String dataPath) {
+void handleDeviceChanges(const char* serializedDoc, String dataPath) {
   DynamicJsonDocument deserializedDoc(1024);
   deserializeJson(deserializedDoc, serializedDoc);
 
 	if (serializedDoc == "null") {
+		Device device = devicesMap[dataPath];
 		devicesMap.erase(dataPath);
+
+		Serial.printf("[Omnisense Sensor] [Device] [-] %s\n", dataPath.c_str());
 		return;
 	}
 
@@ -173,6 +173,7 @@ void toggleRelay(const char* serializedDoc, String dataPath) {
 		Device device;
 
 		device.name = object["name"].as<String>();
+		device.enabled = object["enabled"].as<bool>();
 		device.sensorMode = object["sensorMode"].as<bool>();
 		device.scheduleMode = object["scheduleMode"].as<bool>();
 
@@ -189,33 +190,25 @@ void toggleRelay(const char* serializedDoc, String dataPath) {
 
 			schedule.from = scheduleObj["from"].as<String>();
 			schedule.to = scheduleObj["to"].as<String>();
-		} else {
-			schedule.from = "";
-			schedule.to = "";
 		}
 		device.schedule = schedule;
 
 		Sensor sensor;
 		if (object.containsKey("sensor")) {
 			JsonObject sensorObj = object["sensor"].as<JsonObject>();
-			Sensor sensor;
 
 			sensor.name = sensorObj["name"].as<String>();
 
-			uint8_t pin = sensorObj["pin"].as<int>();
+			uint8_t pin = sensorObj["pin"].as<uint8_t>();
 			sensor.pin.pin = pin;
 			sensor.pin.previousState = object["state"].as<bool>();
 
 			pinMode(pin, INPUT);
-		} else {
-			Device device;
-			device.name = object["name"].as<String>();
 		}
 		device.sensor = sensor;
 
-		String path = "/" + String(dataPath);
-		devicesMap[path] = device;
-
+		devicesMap[dataPath] = device;
+		Serial.printf("[Omnisense Sensor] [Device] [+] %s\n", dataPath.c_str());
 		return;
 	}
 
@@ -225,9 +218,6 @@ void toggleRelay(const char* serializedDoc, String dataPath) {
 		for (JsonPair kvPair : rootObject) {
 			const char* key = kvPair.key().c_str();
 			JsonObject object = kvPair.value().as<JsonObject>(); 
-
-			Serial.print("Processing device with ID: ");
-			Serial.println(key);
 
 			Device device;
 			device.name = object["name"].as<String>();
@@ -247,9 +237,6 @@ void toggleRelay(const char* serializedDoc, String dataPath) {
 
 				schedule.from = scheduleObj["from"].as<String>();
 				schedule.to = scheduleObj["to"].as<String>();
-			} else {
-				schedule.from = "";
-				schedule.to = "";
 			}
 			device.schedule = schedule;
 
@@ -259,18 +246,17 @@ void toggleRelay(const char* serializedDoc, String dataPath) {
 
 				sensor.name = sensorObj["name"].as<String>();
 
-				uint8_t pin = sensorObj["pin"].as<int>();
+				uint8_t pin = sensorObj["pin"].as<uint8_t>();
 				sensor.pin.pin = pin;
 				sensor.pin.previousState = object["state"].as<bool>();
 
 				pinMode(pin, INPUT);
-			} else {
-				sensor.name = "";
-			}
+			} 
 			device.sensor = sensor;
 
 			String path = "/" + String(key);
 			devicesMap[path] = device;
+			Serial.printf("[Omnisense Sensor] [Device] [*] %s\n", path.c_str());
 		}
 		pinsReady = true;
   } else {
@@ -284,37 +270,53 @@ void toggleRelay(const char* serializedDoc, String dataPath) {
 				devicesMap[dataPath].schedule.days[i] = daysArray[i].as<String>();
 			}
 
-			devicesMap[dataPath].schedule.from = scheduleObj["from"].as<String>();
-			devicesMap[dataPath].schedule.to = scheduleObj["to"].as<String>();
+			String from = scheduleObj["from"].as<String>();
+			String to = scheduleObj["to"].as<String>();
+
+			devicesMap[dataPath].schedule.from = from;
+			devicesMap[dataPath].schedule.to = to;
+			Serial.printf("[Omnisense Sensor] [Device] [Schedule] [from] [%s] [~] %s\n", from, dataPath.c_str());
+			Serial.printf("[Omnisense Sensor] [Device] [Schedule] [to] [%s] [~] %s\n", to, dataPath.c_str());
 		}
 
     if (deserializedDoc.containsKey("state")) {
-			devicesMap[dataPath].sensor.pin.previousState = deserializedDoc["state"];
+			bool state = deserializedDoc["state"];
+			devicesMap[dataPath].sensor.pin.previousState = state;
+			Serial.printf("[Omnisense Sensor] [Device] [State] [~] [%s] %s\n", state ? "true" : "false", dataPath.c_str());
 		}
 
 		if (deserializedDoc.containsKey("sensor")) {
 			JsonObject sensorObj = deserializedDoc["sensor"].as<JsonObject>();
 
 			if (sensorObj.containsKey("name")) {
-				devicesMap[dataPath].sensor.name = sensorObj["name"].as<String>();
+				String name = sensorObj["name"].as<String>();
+				devicesMap[dataPath].sensor.name = name;
+				Serial.printf("[Omnisense Sensor] [Device] [Sensor] [Name] [~] [%s] %s\n", name, dataPath.c_str());
 			}
 
 			if (sensorObj.containsKey("pin")) {
-				uint8_t pin = sensorObj["pin"].as<int>();
+				uint8_t pin = sensorObj["pin"].as<uint8_t>();
 				devicesMap[dataPath].sensor.pin.pin = pin;
+				Serial.printf("[Omnisense Sensor] [Device] [Sensor] [Pin] [~] [%s] %s\n", String(pin).c_str(), dataPath.c_str());
 			}
-		}
-		
-		if (deserializedDoc.containsKey("name")) {
-			devicesMap[dataPath].name = deserializedDoc["name"].as<String>();
 		}
 
 		if (deserializedDoc.containsKey("sensorMode")) {
-			devicesMap[dataPath].sensorMode = deserializedDoc["sensorMode"];
+			bool sensorMode = deserializedDoc["sensorMode"];
+			devicesMap[dataPath].sensorMode = sensorMode;
+			Serial.printf("[Omnisense Sensor] [Device] [SensorMode] [~] [%s] %s\n", sensorMode ? "true" : "false", dataPath.c_str());
 		}
 
 		if (deserializedDoc.containsKey("scheduleMode")) {
-			devicesMap[dataPath].scheduleMode = deserializedDoc["scheduleMode"];
+			bool scheduleMode = deserializedDoc["scheduleMode"];
+			devicesMap[dataPath].scheduleMode = scheduleMode;
+			Serial.printf("[Omnisense Sensor] [Device] [ScheduleMode] [~] [%s] %s\n", scheduleMode ? "true" : "false", dataPath.c_str());
+		}
+
+		if (deserializedDoc.containsKey("enabled")) {
+			bool enabled = deserializedDoc["enabled"];
+			devicesMap[dataPath].enabled = enabled;
+			Serial.printf("[Omnisense Sensor] [Device] [Enabled] [~] [%s] %s\n", enabled ? "true" : "false", dataPath.c_str());
 		}
   } 
 }
@@ -444,10 +446,15 @@ void stopActiveListeners() {
 void handleSetInstance() {
 	if (isAuthenticated) {
 		String selectedInstance = server.arg("plain");
+
 		stopActiveListeners();
+		devicesMap.clear();
+
 		instancePath = selectedInstance;
-		Serial.printf("[Omnisense Sensor] [Instance]: %s\n", instancePath);
 		taskListenerReady = false;
+		
+		Serial.printf("[Omnisense Sensor] [Instance]: %s\n", instancePath);
+		
 		server.send(200);
 	} else {
 		server.send(403);
@@ -617,15 +624,16 @@ bool isWithinSchedule(const Schedule& schedule) {
   return isWithinTime;
 }
 
+const unsigned long debounceDelay = 500;
 
 void sensorListeners() {
-  static const unsigned long debounceDelay = 500;
-  
   for (auto &entry : devicesMap) {
     Device &device = entry.second;
 		Pin &pin = device.sensor.pin;
 		Schedule &schedule = device.schedule;
     
+		if (!device.enabled) continue;
+
     if (device.sensor.name == "Sound sensor (KY-038)" && device.sensorMode) {
       Pin &pin = device.sensor.pin;
       
@@ -643,13 +651,21 @@ void sensorListeners() {
 		if (schedule.from != "" && device.scheduleMode) {
 			bool shouldBeOn = isWithinSchedule(schedule);
 			if (shouldBeOn) {
+				unsigned long currentTime = millis();
 				if (pin.previousState) continue;
-				sendStateChange(entry.first, device.name, !pin.previousState);
+				if ((currentTime - pin.lastDebounceTime) > debounceDelay) {
+					sendStateChange(entry.first, device.name, !pin.previousState);
+					pin.lastDebounceTime = currentTime;
+				}
 
 				continue;
 			} else {
 				if (!pin.previousState) continue;
-				sendStateChange(entry.first, device.name, !pin.previousState);
+				unsigned long currentTime = millis();
+				if ((currentTime - pin.lastDebounceTime) > debounceDelay) {
+					sendStateChange(entry.first, device.name, !pin.previousState);
+					pin.lastDebounceTime = currentTime;
+				}
 			}
 		}
   }
