@@ -528,7 +528,7 @@ void setup() {
 	ssl_client.setInsecure();
 }
 
-void sendStateChange(String path, String name, bool currentState) {
+void sendStateChange(String path, String deviceName, String sensorName, bool currentState) {
 	JsonWriter writer;
 
 	String action = currentState ? "on" : "off";
@@ -537,8 +537,8 @@ void sendStateChange(String path, String name, bool currentState) {
 
 	String formattedObject = "{\"actionType\":\"StateToggle\",";
   formattedObject += "\"action\":\"" + action + "\",";
-  formattedObject += "\"name\":\"" + name + "\",";
-  formattedObject += "\"sentBy\":\"Sensor Client\",";
+  formattedObject += "\"name\":\"" + deviceName + "\",";
+  formattedObject += "\"sentBy\":\"Sensor Client (" + sensorName + ")\",";
   formattedObject += "\"message\":\"Turned " + action + " the " + name + ".\",";
   formattedObject += "\"timeSent\":" + String(currentTime) + "}";
 
@@ -634,15 +634,25 @@ void sensorListeners() {
     
 		if (!device.enabled) continue;
 
-    if (device.sensor.name == "Sound sensor (KY-038)" && device.sensorMode) {
-      Pin &pin = device.sensor.pin;
-      
+    if (device.sensor.name == "Sound sensor (KY-038)" && device.sensorMode) { 
       int triggered = digitalRead(pin.pin);
       unsigned long currentTime = millis();
       
       if (triggered) {
         if ((currentTime - pin.lastDebounceTime) > debounceDelay) {
-          sendStateChange(entry.first, device.name, !pin.previousState);
+          sendStateChange(entry.first, device.name, device.sensor.name, !pin.previousState);
+          pin.lastDebounceTime = currentTime;
+        }
+      }
+    }
+
+    if (device.sensor.name == "Motion sensor (HC-SR501)" && device.sensorMode) {
+      int state = digitalRead(pin.pin);
+      unsigned long currentTime = millis();
+
+      if (pin.previousState != state) {
+        if ((currentTime - pin.lastDebounceTime) > debounceDelay) {
+          sendStateChange(entry.first, device.name, device.sensor.name, state);
           pin.lastDebounceTime = currentTime;
         }
       }
@@ -654,7 +664,7 @@ void sensorListeners() {
 				unsigned long currentTime = millis();
 				if (pin.previousState) continue;
 				if ((currentTime - pin.lastDebounceTime) > debounceDelay) {
-					sendStateChange(entry.first, device.name, !pin.previousState);
+					sendStateChange(entry.first, device.name, "Schedule", !pin.previousState);
 					pin.lastDebounceTime = currentTime;
 				}
 
@@ -663,7 +673,7 @@ void sensorListeners() {
 				if (!pin.previousState) continue;
 				unsigned long currentTime = millis();
 				if ((currentTime - pin.lastDebounceTime) > debounceDelay) {
-					sendStateChange(entry.first, device.name, !pin.previousState);
+					sendStateChange(entry.first, device.name, "Schedule", !pin.previousState);
 					pin.lastDebounceTime = currentTime;
 				}
 			}
