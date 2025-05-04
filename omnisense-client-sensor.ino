@@ -27,19 +27,12 @@ struct Sensor {
 	Pin pin;
 };
 
-struct Schedule {
-  String days[7];
-  String from = "";
-  String to = "";
-};
-
 struct Device {
 	String name;
 	bool enabled;
 	bool sensorMode;
 	bool scheduleMode;
 	Sensor sensor;
-  Schedule schedule;
 };
 
 std::map<String, Device> devicesMap;
@@ -177,22 +170,6 @@ void handleDeviceChanges(const char* serializedDoc, String dataPath) {
 		device.sensorMode = object["sensorMode"].as<bool>();
 		device.scheduleMode = object["scheduleMode"].as<bool>();
 
-		Schedule schedule;
-		if (object.containsKey("schedule")) {
-			JsonObject scheduleObj = object["schedule"].as<JsonObject>();
-
-			JsonArray daysArray = scheduleObj["days"].as<JsonArray>();
-			int dayCount = min((size_t)7, daysArray.size());
-			
-			for (int i = 0; i < dayCount; i++) {
-				schedule.days[i] = daysArray[i].as<String>();
-			}
-
-			schedule.from = scheduleObj["from"].as<String>();
-			schedule.to = scheduleObj["to"].as<String>();
-		}
-		device.schedule = schedule;
-
 		Sensor sensor;
 		if (object.containsKey("sensor")) {
 			JsonObject sensorObj = object["sensor"].as<JsonObject>();
@@ -222,23 +199,7 @@ void handleDeviceChanges(const char* serializedDoc, String dataPath) {
 			Device device;
 			device.name = object["name"].as<String>();
 			device.sensorMode = object["sensorMode"].as<bool>();
-			device.scheduleMode = object["scheduleMode"].as<bool>();
-
-			Schedule schedule;
-			if (object.containsKey("schedule")) {
-				JsonObject scheduleObj = object["schedule"].as<JsonObject>();
-
-				JsonArray daysArray = scheduleObj["days"].as<JsonArray>();
-				int dayCount = min((size_t)7, daysArray.size());
-				
-				for (int i = 0; i < dayCount; i++) {
-					schedule.days[i] = daysArray[i].as<String>();
-				}
-
-				schedule.from = scheduleObj["from"].as<String>();
-				schedule.to = scheduleObj["to"].as<String>();
-			}
-			device.schedule = schedule;
+			device.scheduleMode = object["scheduleMode"].as<bool>();	
 
 			Sensor sensor;
 			if (object.containsKey("sensor")) {
@@ -260,25 +221,6 @@ void handleDeviceChanges(const char* serializedDoc, String dataPath) {
 		}
 		pinsReady = true;
   } else {
-		if (deserializedDoc.containsKey("schedule")) {
-			JsonObject scheduleObj = deserializedDoc["schedule"].as<JsonObject>();
-
-			JsonArray daysArray = scheduleObj["days"].as<JsonArray>();
-			int dayCount = min((size_t)7, daysArray.size());
-			
-			for (int i = 0; i < dayCount; i++) {
-				devicesMap[dataPath].schedule.days[i] = daysArray[i].as<String>();
-			}
-
-			String from = scheduleObj["from"].as<String>();
-			String to = scheduleObj["to"].as<String>();
-
-			devicesMap[dataPath].schedule.from = from;
-			devicesMap[dataPath].schedule.to = to;
-			Serial.printf("[Omnisense Sensor] [Device] [Schedule] [from] [%s] [~] %s\n", from, dataPath.c_str());
-			Serial.printf("[Omnisense Sensor] [Device] [Schedule] [to] [%s] [~] %s\n", to, dataPath.c_str());
-		}
-
     if (deserializedDoc.containsKey("state")) {
 			bool state = deserializedDoc["state"];
 			devicesMap[dataPath].sensor.pin.previousState = state;
@@ -539,7 +481,7 @@ void sendStateChange(String path, String deviceName, String sensorName, bool cur
   formattedObject += "\"action\":\"" + action + "\",";
   formattedObject += "\"name\":\"" + deviceName + "\",";
   formattedObject += "\"sentBy\":\"Sensor Client (" + sensorName + ")\",";
-  formattedObject += "\"message\":\"Turned " + action + " the " + name + ".\",";
+  formattedObject += "\"message\":\"Turned " + action + " the " + sensorName + ".\",";
   formattedObject += "\"timeSent\":" + String(currentTime) + "}";
 
   object_t message(formattedObject.c_str());
@@ -555,86 +497,16 @@ void sendStateChange(String path, String deviceName, String sensorName, bool cur
 	Database.update(aClient2, targetPath, state);
 }
 
-bool isWithinSchedule(const Schedule& schedule) {
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    return false;
-  }
-  
-  int currentDayOfWeek = timeinfo.tm_wday;
-
-  bool isDayScheduled = false;
-  for (int i = 0; i < 7; i++) {
-    if (schedule.days[i].length() == 0) continue;
-    
-    String day = schedule.days[i];
-    
-    if ((day == "Sunday" && currentDayOfWeek == 0) ||
-        (day == "Monday" && currentDayOfWeek == 1) ||
-        (day == "Tuesday" && currentDayOfWeek == 2) ||
-        (day == "Wednesday" && currentDayOfWeek == 3) ||
-        (day == "Thursday" && currentDayOfWeek == 4) ||
-        (day == "Friday" && currentDayOfWeek == 5) ||
-        (day == "Saturday" && currentDayOfWeek == 6)) {
-      isDayScheduled = true;
-      break;
-    }
-  }
-  
-  if (!isDayScheduled) return false;
-  
-  int fromHour, fromMinute, toHour, toMinute;
-  bool fromIsPM, toIsPM;
-  
-  char fromAmPm[3] = {0};
-  int fromResult = sscanf(schedule.from.c_str(), "%d:%d %2s", &fromHour, &fromMinute, fromAmPm);
-  fromIsPM = (strcmp(fromAmPm, "PM") == 0);
-  
-  char toAmPm[3] = {0};
-  int toResult = sscanf(schedule.to.c_str(), "%d:%d %2s", &toHour, &toMinute, toAmPm);
-  toIsPM = (strcmp(toAmPm, "PM") == 0);
-  
-  // Check for parsing errors
-  if (fromResult != 3 || toResult != 3) {
-    Serial.println("[Schedule] Time parsing failed, returning false");
-    return false;
-  }
-
-  // Convert to 24-hour format
-  int originalFromHour = fromHour;
-  int originalToHour = toHour;
-  
-  if (fromHour == 12) fromHour = fromIsPM ? 12 : 0;
-  else if (fromIsPM) fromHour += 12;
-  
-  if (toHour == 12) toHour = toIsPM ? 12 : 0;
-  else if (toIsPM) toHour += 12;
-
-  int currentMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
-  int fromMinutes = fromHour * 60 + fromMinute;
-  int toMinutes = toHour * 60 + toMinute;
-  
-  bool isWithinTime;
-  if (fromMinutes <= toMinutes) {
-    isWithinTime = (currentMinutes >= fromMinutes && currentMinutes < toMinutes);
-  } else {
-    isWithinTime = (currentMinutes >= fromMinutes || currentMinutes < toMinutes);
-  }
-  
-  return isWithinTime;
-}
-
-const unsigned long debounceDelay = 500;
+const unsigned long debounceDelay = 300;
 
 void sensorListeners() {
   for (auto &entry : devicesMap) {
     Device &device = entry.second;
 		Pin &pin = device.sensor.pin;
-		Schedule &schedule = device.schedule;
     
-		if (!device.enabled) continue;
+		if (!device.enabled || !device.sensorMode) continue;
 
-    if (device.sensor.name == "Sound sensor (KY-038)" && device.sensorMode) { 
+    if (device.sensor.name == "Sound sensor (KY-038)") { 
       int triggered = digitalRead(pin.pin);
       unsigned long currentTime = millis();
       
@@ -646,7 +518,7 @@ void sensorListeners() {
       }
     }
 
-    if (device.sensor.name == "Motion sensor (HC-SR501)" && device.sensorMode) {
+    if (device.sensor.name == "Motion sensor (HC-SR501)") {
       int state = digitalRead(pin.pin);
       unsigned long currentTime = millis();
 
@@ -656,28 +528,7 @@ void sensorListeners() {
           pin.lastDebounceTime = currentTime;
         }
       }
-    }
-
-		if (schedule.from != "" && device.scheduleMode) {
-			bool shouldBeOn = isWithinSchedule(schedule);
-			if (shouldBeOn) {
-				unsigned long currentTime = millis();
-				if (pin.previousState) continue;
-				if ((currentTime - pin.lastDebounceTime) > debounceDelay) {
-					sendStateChange(entry.first, device.name, "Schedule", !pin.previousState);
-					pin.lastDebounceTime = currentTime;
-				}
-
-				continue;
-			} else {
-				if (!pin.previousState) continue;
-				unsigned long currentTime = millis();
-				if ((currentTime - pin.lastDebounceTime) > debounceDelay) {
-					sendStateChange(entry.first, device.name, "Schedule", !pin.previousState);
-					pin.lastDebounceTime = currentTime;
-				}
-			}
-		}
+    }	
   }
 }
 
